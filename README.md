@@ -71,9 +71,10 @@ Install latest version of npm
    ```
 3. Create config.env file and specify values for the ff.
    ```sh
-   PORT, DATABASE_URL, SECRET_KEY
+   PORT, SECRET_KEY
    ```
-4. Start the application
+4. Configure Postgress DB in knexfile
+5. Start the application
    ```sh
    npm run dev
    ```

@@ -1,78 +1,74 @@
-import { Schema, Document, Model, model } from 'mongoose';
 import { MessageStatus } from '../constants';
 import { ChatMessage } from '../types';
-import UserModel, { User } from './user';
+import { getUserByUsername, User } from './user';
+import knex from '../lib/knex';
+import TableEnum from './tableNames';
+import { randomId } from '../utils/strings';
 
 export interface Message {
+	id: string;
 	content: string;
 	status: string;
 	isSystem: boolean;
-	user: Schema.Types.ObjectId | User;
+	userId: string;
 	roomCode: string;
 }
 
-export interface MessageDocument extends Message, Document {
-	user: Schema.Types.ObjectId;
+export interface MessageDocument extends Message {
+	createdAt: number;
+	updatedAt: number;
 }
 
-export interface MessagePopulatedDocument extends Message, Document {
-	user: User;
+export interface MessageExtended extends Omit<Message, 'userId'> {
+	user: Pick<User, 'id' | 'username' | 'firstName' | 'lastName'>;
 }
 
-export interface MessageModel extends Model<MessageDocument> {
-	createMsg(chatMessage: ChatMessage): Promise<MessagePopulatedDocument>;
-	getMsgs(roomCode: string): Promise<MessagePopulatedDocument>;
-}
-
-const messageSchema = new Schema<MessageDocument>(
-	{
-		content: {
-			type: String,
-			required: true
-		},
-		status: {
-			type: String,
-			enum: MessageStatus,
-			default: MessageStatus.SENT
-		},
-		isSystem: {
-			type: Boolean,
-			default: false
-		},
-		user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-		roomCode: {
-			type: String,
-			required: true
-		}
-	},
-	{ timestamps: true }
-);
-
-messageSchema.statics.createMsg = async function(
-	this: Model<MessageDocument>,
+export const createMsg = async (
 	{ userRoom, content, isSystem = false, status = MessageStatus.SENT }: ChatMessage
-) {
-	const user = await UserModel.findOne({ username: isSystem ? 'Chatbot' : userRoom.name });
-	if (user) {
-		const message = await this.create({ content, isSystem, status, user: user._id, roomCode: userRoom.room });
-		return await this.populate(message, {
-			path: 'user',
-			select: 'username firstName lastName',
-			model: 'User'
-		});
+): Promise<MessageExtended> => {
+	const user = await getUserByUsername(isSystem ? 'Chatbot' : userRoom.name);
+	if (!user) {
+		throw { error: 'User not found' };
 	}
+
+	const message: Message = {
+		id: await randomId(),
+		content,
+		isSystem,
+		status,
+		userId: user.id,
+		roomCode: userRoom.room,
+	};
+	const [messageInserted] = await knex<MessageDocument>(TableEnum.messages)
+		.insert(message)
+		.returning('*');
+
+	const { id, username, firstName, lastName } = user;
+	const messageExtended: MessageExtended = {
+		...messageInserted,
+		user: { id, username, firstName, lastName },
+	};
+
+	return messageExtended;
 };
 
-messageSchema.statics.getMsgs = async function(this: Model<MessageDocument>, roomCode: string) {
-	return await this.find({ roomCode })
-		.populate({
-			path: 'user',
-			select: 'username firstName lastName',
-			model: 'User'
-		})
-		.exec();
+export const getMsgs = async (roomCode: string) => {
+	type Result = MessageDocument & Pick<User, 'firstName' | 'lastName' | 'username'>;
+	const results: Result[] = await knex
+		.select('m.*', 'u.firstName', 'u.lastName', 'u.username')
+		.from(`${TableEnum.messages} AS m`)
+		.join(`${TableEnum.users} AS u`, 'u.id', '=', 'm.userId')
+		.where({ roomCode })
+		.orderBy('m.createdAt', 'asc')
+		.limit(1000);
+
+	const messagesExtended: MessageExtended[] = results
+		.map(({ userId, firstName, lastName, username, ...msg }) => {
+			return {
+				...msg,
+				user: { id: userId, firstName, lastName, username },
+			};
+		});
+
+	return messagesExtended;
 };
-
-const Message = model<MessageDocument, MessageModel>('Message', messageSchema);
-
-export default Message;

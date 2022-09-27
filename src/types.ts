@@ -1,5 +1,5 @@
 export interface UserRoom {
-	name: string;
+	name: string; // username
 	room: string;
 }
 

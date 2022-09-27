@@ -4,7 +4,7 @@ import user from '../controllers/user';
 const router = express.Router();
 
 router
-	.get('/', user.onGetAllUsers)
+	// .get('/', user.onGetAllUsers)
 	.post('/changeStatus', user.changeLoginStatus)
 	.post('/', user.onCreateUser)
 	.get('/:id', user.onGetUserById)

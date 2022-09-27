@@ -1,5 +1,5 @@
 import express from 'express';
-import User from '../models/user';
+import { getUserByUsername } from '../models/user';
 import user from '../controllers/user';
 import { encode } from '../middlewares/jwt';
 
@@ -12,7 +12,7 @@ router.get('/', async (req: any, res: any) => {
 });
 router.post('/register', user.onCreateUser);
 router.post('/login', encode, async (req: any, res: any, next: any) => {
-	const userDetails = await User.getUserByUsername(req.username);
+	const userDetails = await getUserByUsername(req.username);
 	return res.status(200).json({
 		success: true,
 		authorization: req.authToken,

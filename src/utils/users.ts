@@ -4,9 +4,9 @@ export interface UserSocket {
 	rooms: Array<string>;
 }
 
-let users: Array<UserSocket> = [];
+const users: Array<UserSocket> = [];
 
-export function joinRoom(socketId: string, username: string, room: string) {
+export function socketJoinRoom(socketId: string, username: string, room: string) {
 	const userIndex = users.findIndex((user) => user.socketId === socketId);
 	if (userIndex > 0) {
 		users[userIndex].rooms.push(room);
@@ -24,8 +24,8 @@ export function disconnect(socketId: string) {
 	}
 }
 
-export function leaveRoom(room: string, username: string) {
-	let socketIDs: Array<string> = [];
+export function socketLeaveRoom(room: string, username: string) {
+	const socketIDs: Array<string> = [];
 	users.forEach((user, i) => {
 		if (user.username === username) {
 			socketIDs.push(user.socketId);
@@ -39,8 +39,8 @@ export function countUserSockets(username: string) {
 	return users.filter((user) => user.username === username).length;
 }
 
-export function deleteRoom(room: string) {
-	let socketIDs: Array<string> = [];
+export function socketDeleteRoom(room: string) {
+	const socketIDs: Array<string> = [];
 	users.forEach((user, i) => {
 		if (user.rooms.includes(room)) {
 			socketIDs.push(user.socketId);

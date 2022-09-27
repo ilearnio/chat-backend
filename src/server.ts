@@ -1,4 +1,3 @@
-import User from './models/user';
 import express, { Application } from 'express';
 import { createServer, Server as HttpServer } from 'http';
 import socketio, { Server as IOServer, Socket } from 'socket.io';
@@ -15,17 +14,20 @@ import { decode } from './middlewares/jwt';
 import { ChatEvent, ERROR_MESSAGES, WELCOME_MESSAGES } from './constants';
 import { ChatMessage } from './types';
 import { connectDb } from './config/index';
-import models from './models';
-import { joinRoom, disconnect, countUserSockets } from './utils/users';
-import Message from './models/message';
+import { socketJoinRoom, disconnect, countUserSockets } from './utils/users';
+import { createMsg } from './models/message';
+import { changeLoginStatus, findByLogin, getUserByUsername } from './models/user';
+import { updatePreview, updateUnread } from './models/room';
 
 const PORT: string | number = process.env.PORT || 8080;
 const corsOptions: CorsOptions = { credentials: false };
+
 const app: Application = express();
 app.use(logger('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cors(corsOptions));
+
 const server: HttpServer = createServer(app);
 const io: IOServer = (socketio as any)(server, { cors: corsOptions });
 
@@ -37,11 +39,11 @@ connectDb().then(async () => {
 		socket.on(ChatEvent.JOIN, async ({ userRoom, isFirst }: any) => {
 			console.log('User joined room');
 			console.log(`[user]: ${JSON.stringify(userRoom)}`);
-			joinRoom(socket.id, userRoom.name, userRoom.room);
+			socketJoinRoom(socket.id, userRoom.name, userRoom.room);
 			socket.join(userRoom.room);
 			if (isFirst) {
 				try {
-					const newMsg = await Message.createMsg({
+					const newMsg = await createMsg({
 						userRoom,
 						content: WELCOME_MESSAGES[Math.floor(Math.random() * WELCOME_MESSAGES.length)].replace(
 							'{{name}}',
@@ -49,7 +51,7 @@ connectDb().then(async () => {
 						),
 						isSystem: true
 					});
-					const userDetails = await User.getUserByUsername(userRoom.name);
+					const userDetails = await getUserByUsername(userRoom.name);
 					io.to(userRoom.room).emit(ChatEvent.MESSAGE, { newMsg });
 					socket.to(userRoom.room).emit(ChatEvent.JOIN, { userDetails, joinedRoom: userRoom.room });
 				} catch (err) {
@@ -62,11 +64,11 @@ connectDb().then(async () => {
 			console.log('Message has been emitted');
 			console.log(`[message]: ${JSON.stringify(m)}`);
 			try {
-				const newMsg = await models.Message.createMsg({
+				const newMsg = await createMsg({
 					userRoom: m.userRoom,
 					content: m.content
 				});
-				const updatedRoom = await models.Room.updatePreview(m.userRoom.room, newMsg.content);
+				const updatedRoom = await updatePreview(m.userRoom.room, newMsg.content);
 				io.to(m.userRoom.room).emit(ChatEvent.MESSAGE, { newMsg, updatedRoom });
 			} catch (err) {
 				console.log(err);
@@ -77,7 +79,7 @@ connectDb().then(async () => {
 			console.log('Update unread has been emitted');
 			console.log(`[update unread]: ${JSON.stringify({ unread, roomCode, username })}`);
 			try {
-				await models.Room.updateUnread(unread, roomCode, username);
+				await updateUnread(unread, roomCode, username);
 			} catch (err) {
 				console.log(err);
 			}
@@ -87,8 +89,8 @@ connectDb().then(async () => {
 			console.log('Client disconnected');
 			const user = disconnect(socket.id);
 			if (user) {
-				const userDetails = await User.findByLogin(user.username);
-				if (countUserSockets(user.username) === 0) User.changeLoginStatus(userDetails._id, false);
+				const userDetails = await findByLogin(user.username);
+				if (countUserSockets(user.username) === 0) changeLoginStatus(userDetails.id, false);
 			}
 		});
 	});

@@ -1,141 +1,149 @@
-import { Schema, Document, Model, model } from 'mongoose';
 import cryptoRandomString from 'crypto-random-string';
-import UserModel, { User } from './user';
-import Message from './message';
+import chunk from 'lodash.chunk';
+import { User, UserDocument } from './user';
+import knex from '../lib/knex';
+import TableEnum from './tableNames';
+import { ERROR_MESSAGES } from '../constants';
 
 interface RoomUser {
-	user: Schema.Types.ObjectId;
-	unread?: number;
-}
-interface RoomUserPopulated {
-	user: User;
-	unread?: number;
+	user: Pick<User, 'firstName' | 'lastName' | 'username' | 'email'>;
+	unread: number;
 }
 
 export interface Room {
 	code: string;
+	ownerUserId: string;
 	description: string;
+	userCount: number;
 	lastActivity?: Date;
 	lastMessagePreview?: string;
-	users: Array<RoomUser> | Array<RoomUserPopulated>;
 }
 
-export interface RoomDocument extends Room, Document {
-	users: Array<RoomUser>;
+export interface RoomDocument extends Room {
+	createdAt: Date;
+	updatedAt: Date;
 }
 
-export interface RoomPopulatedDocument extends Room, Document {
-	users: Array<RoomUserPopulated>;
+export interface RoomExtended extends RoomDocument {
+	users: RoomUser[];
 }
 
-export interface RoomModel extends Model<RoomDocument> {
-	createRoom(userId: Schema.Types.ObjectId, description: string): Promise<RoomPopulatedDocument>;
-	joinRoom(room: RoomDocument, userId: Schema.Types.ObjectId): Promise<RoomPopulatedDocument>;
-	updatePreview(roomCode: string, message: string): Promise<RoomPopulatedDocument>;
-	updateUnread(unread: number, roomCode: string, username: string): Promise<RoomPopulatedDocument>;
-	deleteRoom(roomCode: string): Promise<RoomDocument>;
+export interface RoomUsersRelation {
+	roomCode: string;
+	userId: string;
+	unread?: number;
 }
 
-const roomSchema = new Schema<RoomDocument>(
-	{
-		code: {
-			type: String,
-			unique: true,
-			required: true
-		},
-		description: {
-			type: String,
-			required: true
-		},
-		users: [
-			{
-				user: { type: Schema.Types.ObjectId, ref: 'User' },
-				unread: { type: Number, default: 0 }
-			}
-		],
-		lastActivity: {
-			type: Date
-		},
-		lastMessagePreview: {
-			type: String
-		}
-	},
-	{ timestamps: true }
-);
+export interface RoomUsersRelationDocument {
+	roomCode: string;
+	userId: string;
+	unread: number;
+}
 
-roomSchema.statics.createRoom = async function(
-	this: Model<RoomDocument>,
-	userId: Schema.Types.ObjectId,
+export const createRoom = async (
+	userId: string,
 	description: string
-) {
-	const code = cryptoRandomString({ length: 6, type: 'alphanumeric' });
-	const room = await this.create({ code, description, users: [ { user: userId } ] });
-	return await room
-		.populate({
-			path: 'users.user',
-			select: 'firstName lastName username email',
-			model: 'User'
-		})
-		.execPopulate();
+) => {
+	const code = cryptoRandomString({ length: 8, type: 'alphanumeric' });
+	const room: Room = { code, ownerUserId: userId, description, userCount: 0 };
+	await knex<RoomDocument>(TableEnum.rooms).insert(room);
+	await joinRoom(code, userId);
+	return code;
 };
 
-roomSchema.statics.joinRoom = async function(
-	this: Model<RoomDocument>,
-	room: RoomDocument,
-	userId: Schema.Types.ObjectId
-) {
-	room.users.push({ user: userId });
-	await room.save();
-
-	return await room
-		.populate({
-			path: 'users.user',
-			select: 'firstName lastName username email',
-			model: 'User'
-		})
-		.execPopulate();
+export const getRoomByCode = async (roomCode: string): Promise<RoomDocument | undefined> => {
+	return knex<RoomDocument>(TableEnum.rooms).where({ code: roomCode }).limit(1).first();
 };
 
-roomSchema.statics.updatePreview = async function(this: Model<RoomDocument>, roomCode: string, message: string) {
-	return await this.findOneAndUpdate(
-		{ code: roomCode },
-		{ lastMessagePreview: message.slice(0, 40), lastActivity: new Date() },
-		{
-			new: true
-		}
-	)
-		.populate({
-			path: 'users.user',
-			select: 'firstName lastName username email',
-			model: 'User'
-		})
-		.exec();
+export const getRoomExtended = async (roomCode: string): Promise<RoomExtended> => {
+	const room = await getRoomByCode(roomCode);
+	const users: (
+		Pick<User, 'firstName' | 'lastName' | 'username' | 'email'> &
+		{ unread: number }
+	)[] = await knex
+		.select('u.firstName', 'u.lastName', 'u.username', 'u.email', 'ru.unread')
+		.from(`${TableEnum.users} AS u`)
+		.join(`${TableEnum.room_users} AS ru`, 'ru.userId', '=', 'u.id')
+		.where('ru.roomCode', '=', roomCode);
+	const roomUsers: RoomUser[] = users.map(({ unread, ...user }) => {
+		return { user, unread };
+	});
+	return { ...room, users: roomUsers };
 };
 
-roomSchema.statics.updateUnread = async function(
-	this: Model<RoomDocument>,
-	unread: number,
-	roomCode: string,
-	username: string
-) {
-	const user = await UserModel.findOne({ username });
-	if (user)
-		return await this.findOneAndUpdate(
-			{ code: roomCode },
-			{ $set: { 'users.$[roomUser].unread': unread } },
-			{ arrayFilters: [ { 'roomUser.user': user._id } ], new: true }
-		)
-			.populate({
-				path: 'users.user',
-				select: 'firstName lastName username email',
-				model: 'User'
-			})
-			.exec();
+export const getUserExtendedRooms = async (userId: string) => {
+	const roomCodes: string[] = await knex(TableEnum.room_users).pluck('roomCode').where({ userId });
+	const rooms: RoomExtended[] = [];
+	for (const ch of chunk(roomCodes, 7)) {
+		rooms.push(...await Promise.all(ch.map(getRoomExtended)));
+	}
+	return rooms;
 };
 
-roomSchema.statics.deleteRoom = async function(this: Model<RoomDocument>, roomCode: string) {
-	await Message.deleteMany({ roomCode });
-	return await this.findOneAndDelete({ code: roomCode });
+export const getRoomUser = async (roomCode: string, userId: string): Promise<UserDocument> => {
+	return knex.select('u.*')
+		.from(`${TableEnum.users} AS u`)
+		.join(`${TableEnum.room_users} AS ru`, 'ru.userId', '=', 'u.id')
+		.where('u.id', '=', userId)
+		.where('ru.roomCode', '=', roomCode)
+		.limit(1)
+		.first();
 };
 
-export default model<RoomDocument, RoomModel>('Room', roomSchema);
+export const joinRoom = async (roomCode: string, userId: string) => {
+	const relation: RoomUsersRelation = { roomCode, userId };
+	await knex<RoomUsersRelation>(TableEnum.room_users).insert(relation);
+	await knex<RoomDocument>(TableEnum.rooms)
+		.where({ code: roomCode })
+		.increment('userCount', 1)
+		.update({ updatedAt: new Date() })
+		.debug(true);
+};
+
+export const leaveRoom = async (roomCode: string, userId: string) => {
+	const room = await getRoomByCode(roomCode);
+	if (!room) {
+		throw new Error(ERROR_MESSAGES.ROOM_NOT_FOUND);
+	}
+
+	const user = await getRoomUser(roomCode, userId);
+	if (!user) {
+		throw new Error(ERROR_MESSAGES.USER_NOT_FOUND);
+	}
+
+	if (room.userCount === 1) {
+		await deleteRoom(room.code);
+		return null;
+	}
+
+	const [[updatedRoom]] = await Promise.all([
+		knex<RoomDocument>(TableEnum.rooms)
+			.decrement('userCount', 1)
+			.where({ code: roomCode })
+			.returning('*')
+			.limit(1),
+		knex<RoomUsersRelation>(TableEnum.room_users)
+			.delete()
+			.where({ roomCode, userId })
+			.limit(1),
+	]);
+	return updatedRoom;
+};
+
+export const updatePreview = async (roomCode: string, message: string) => {
+	await knex<RoomDocument>(TableEnum.rooms).update({
+		lastMessagePreview: message.slice(0, 40),
+		lastActivity: new Date(),
+	}).where({ code: roomCode });
+	return getRoomExtended(roomCode);
+};
+
+export const updateUnread = async (unread: number, roomCode: string, userId: string) => {
+	await knex<RoomUsersRelation>(TableEnum.room_users)
+		.update('unread', unread)
+		.where({ roomCode, userId });
+};
+
+export const deleteRoom = async (roomCode: string) => {
+	await knex<RoomDocument>(TableEnum.rooms).delete().where({ code: roomCode });
+};
